@@ -18,7 +18,7 @@ ORIGIN = "PUS"                              # 김해
 DESTINATIONS = ["DAD", "CXR", "BKK"]        # 다낭 / 나트랑(깜라인) / 방콕
 DEPARTURE_DATE = "2026-08-03"
 RETURN_DATES = ["2026-08-08", "2026-08-09"]
-ADULTS = 2
+ADULTS = 1
 CURRENCY = "KRW"
 
 # === API 설정 ===
