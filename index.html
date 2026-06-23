@@ -369,7 +369,13 @@ function renderCards(rows) {
       const medals = ['🥇', '🥈', '🥉'];
       const sectionsHTML = ORIGIN_ORDER.map(origin => {
         const originInfo = ORIGIN_INFO[origin];
-        const flights = groupRows.filter(r => r.origin === origin).sort((a, b) => a.price_krw - b.price_krw).slice(0, 3);
+        // 항공사별 최저가만 추출 (dedupe)
+        const sorted = groupRows.filter(r => r.origin === origin).sort((a, b) => a.price_krw - b.price_krw);
+        const seen = {};
+        for (const r of sorted) {
+          if (!seen[r.airlines]) seen[r.airlines] = r;
+        }
+        const flights = Object.values(seen).slice(0, 3);
 
         if (flights.length === 0) {
           return `
