@@ -2,7 +2,7 @@
 """
 김해(PUS) + 인천(ICN) → DAD/CXR/BKK 항공권 가격 매일 추적
 SerpAPI Google Flights API 사용
-직항편 기준 출발지별 TOP 3 표시
+직항편 기준 출발지별 항공사 TOP 3 표시 (항공사별 최저가)
 """
 
 import os
@@ -13,15 +13,13 @@ from itertools import product
 
 import requests
 
-# === 검색 조건 ===
-ORIGINS = ["ICN", "PUS"]                    # 인천 + 김해
+ORIGINS = ["ICN", "PUS"]
 DESTINATIONS = ["DAD", "CXR", "BKK"]
 DEPARTURE_DATE = "2026-08-03"
 RETURN_DATES = ["2026-08-08", "2026-08-09"]
 ADULTS = 1
 CURRENCY = "KRW"
 
-# === API 설정 ===
 API_KEY = os.environ.get("SERPAPI_KEY")
 BASE_URL = "https://serpapi.com/search"
 CSV_FILE = Path(__file__).parent / "flight_prices.csv"
@@ -37,7 +35,7 @@ def search_flights(origin, destination, depart, ret):
         "currency": CURRENCY,
         "adults": ADULTS,
         "type": 1,
-        "stops": 1,                 # 1=직항만 (Google Flights API 파라미터)
+        "stops": 1,
         "hl": "ko",
         "api_key": API_KEY,
     }
@@ -70,6 +68,15 @@ def parse_flights(data):
     return parsed
 
 
+def dedupe_by_airline(flights, n=3):
+    """항공사별 최저가만 추출 (각 항공사당 1개), 가격순으로 n개 반환"""
+    seen = {}
+    for f in flights:
+        if f["airlines"] not in seen:
+            seen[f["airlines"]] = f
+    return list(seen.values())[:n]
+
+
 def fmt_duration(mins):
     if not mins:
         return ""
@@ -85,12 +92,10 @@ def main():
     now = datetime.now()
     origin_names = {"PUS": "부산", "ICN": "인천"}
     print(f"🛫 {now:%Y-%m-%d %H:%M} | 출발지 {'/'.join(ORIGINS)} → {'/'.join(DESTINATIONS)}")
-    print(f"   {DEPARTURE_DATE} 출발 / 귀국 {' or '.join(RETURN_DATES)} / 성인 {ADULTS}명 / 직항만")
-    print(f"   총 {len(ORIGINS) * len(DESTINATIONS) * len(RETURN_DATES)}건 조회\n")
+    print(f"   {DEPARTURE_DATE} 출발 / 귀국 {' or '.join(RETURN_DATES)} / 성인 {ADULTS}명 / 직항만 / 항공사별 최저가\n")
 
     rows = []
     today = now.strftime("%Y-%m-%d")
-    # 결과 모음: {(dest, ret): {origin: [direct_flights_sorted_by_price]}}
     by_route = {}
 
     for origin, dest, ret_date in product(ORIGINS, DESTINATIONS, RETURN_DATES):
@@ -110,7 +115,6 @@ def main():
             continue
 
         parsed = parse_flights(data)
-        # 직항만 필터링 (Google API의 stops=1 파라미터가 적용되지만 한번 더 확인)
         direct = [p for p in parsed if p["stops"] == 0]
 
         if not direct:
@@ -122,16 +126,16 @@ def main():
         level_emoji = {"low": "🟢싸요", "typical": "🟡보통", "high": "🔴비싸요"}.get(level, "")
         typical = insights.get("typical_price_range", [])
 
-        best = direct[0]
+        unique_top3 = dedupe_by_airline(direct, n=3)
+        best = unique_top3[0]
         print(f"     💰 {best['price']:>9,.0f} KRW  "
               f"{best['airlines']} / 직항 / {fmt_duration(best['duration_min'])}  "
-              f"{level_emoji}")
+              f"{level_emoji}  (항공사 {len({d['airlines'] for d in direct})}개)")
 
-        # 결과 정리
-        by_route.setdefault((dest, ret_date), {})[origin] = direct[:3]
+        by_route.setdefault((dest, ret_date), {})[origin] = unique_top3
 
-        # CSV용 (직항 상위 5개)
-        for rank, p in enumerate(direct[:5], 1):
+        # CSV: 항공사별 최저가 TOP 3만 저장
+        for rank, p in enumerate(unique_top3, 1):
             rows.append({
                 "check_date": today,
                 "origin": origin,
@@ -160,15 +164,14 @@ def main():
             w.writerows(rows)
         print(f"\n📝 {len(rows)}건 → {CSV_FILE.name}")
 
-    # 출발지별 TOP 3 출력
     if by_route:
         print("\n" + "=" * 70)
-        print("📊 오늘의 직항 최저가 TOP 3 (출발지별)")
+        print("📊 오늘의 직항 항공사별 최저가 TOP 3 (출발지별)")
         print("=" * 70)
         medals = ["🥇", "🥈", "🥉"]
         for (dest, ret), origins_data in sorted(by_route.items()):
             print(f"\n  🌴 {dest} / 귀국 {ret}")
-            for origin in ORIGINS:  # ICN, PUS 순서 고정
+            for origin in ORIGINS:
                 items = origins_data.get(origin, [])
                 origin_label = f"[{origin_names[origin]} {origin}]"
                 if not items:
