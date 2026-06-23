@@ -2,7 +2,7 @@
 """
 김해(PUS) + 인천(ICN) → DAD/CXR/BKK 항공권 가격 매일 추적
 SerpAPI Google Flights API 사용
-일일 12건 조회 (출발지 2 × 목적지 3 × 귀국일 2)
+직항편 기준 출발지별 TOP 3 표시
 """
 
 import os
@@ -14,8 +14,8 @@ from itertools import product
 import requests
 
 # === 검색 조건 ===
-ORIGINS = ["PUS", "ICN"]                    # 김해 + 인천
-DESTINATIONS = ["DAD", "CXR", "BKK"]        # 다낭 / 나트랑(깜라인) / 방콕
+ORIGINS = ["ICN", "PUS"]                    # 인천 + 김해
+DESTINATIONS = ["DAD", "CXR", "BKK"]
 DEPARTURE_DATE = "2026-08-03"
 RETURN_DATES = ["2026-08-08", "2026-08-09"]
 ADULTS = 1
@@ -37,6 +37,7 @@ def search_flights(origin, destination, depart, ret):
         "currency": CURRENCY,
         "adults": ADULTS,
         "type": 1,
+        "stops": 1,                 # 1=직항만 (Google Flights API 파라미터)
         "hl": "ko",
         "api_key": API_KEY,
     }
@@ -82,13 +83,15 @@ def main():
         return 1
 
     now = datetime.now()
+    origin_names = {"PUS": "부산", "ICN": "인천"}
     print(f"🛫 {now:%Y-%m-%d %H:%M} | 출발지 {'/'.join(ORIGINS)} → {'/'.join(DESTINATIONS)}")
-    print(f"   {DEPARTURE_DATE} 출발 / 귀국 {' or '.join(RETURN_DATES)} / 성인 {ADULTS}명")
+    print(f"   {DEPARTURE_DATE} 출발 / 귀국 {' or '.join(RETURN_DATES)} / 성인 {ADULTS}명 / 직항만")
     print(f"   총 {len(ORIGINS) * len(DESTINATIONS) * len(RETURN_DATES)}건 조회\n")
 
     rows = []
-    all_results = []  # (dest, ret) 그룹별로 모아서 cross-origin 순위 매기기용
     today = now.strftime("%Y-%m-%d")
+    # 결과 모음: {(dest, ret): {origin: [direct_flights_sorted_by_price]}}
+    by_route = {}
 
     for origin, dest, ret_date in product(ORIGINS, DESTINATIONS, RETURN_DATES):
         label = f"{origin}→{dest} ({DEPARTURE_DATE}~{ret_date})"
@@ -107,22 +110,29 @@ def main():
             continue
 
         parsed = parse_flights(data)
-        if not parsed:
-            print("     (결과 없음)")
+        # 직항만 필터링 (Google API의 stops=1 파라미터가 적용되지만 한번 더 확인)
+        direct = [p for p in parsed if p["stops"] == 0]
+
+        if not direct:
+            print(f"     (직항편 없음)")
             continue
 
-        best = parsed[0]
         insights = data.get("price_insights") or {}
         level = insights.get("price_level", "")
         level_emoji = {"low": "🟢싸요", "typical": "🟡보통", "high": "🔴비싸요"}.get(level, "")
         typical = insights.get("typical_price_range", [])
 
+        best = direct[0]
         print(f"     💰 {best['price']:>9,.0f} KRW  "
-              f"{best['airlines']} / {best['stops']}경유 / {fmt_duration(best['duration_min'])}  "
+              f"{best['airlines']} / 직항 / {fmt_duration(best['duration_min'])}  "
               f"{level_emoji}")
 
-        for rank, p in enumerate(parsed, 1):
-            row = {
+        # 결과 정리
+        by_route.setdefault((dest, ret_date), {})[origin] = direct[:3]
+
+        # CSV용 (직항 상위 5개)
+        for rank, p in enumerate(direct[:5], 1):
+            rows.append({
                 "check_date": today,
                 "origin": origin,
                 "destination": dest,
@@ -139,15 +149,7 @@ def main():
                 "price_level": level,
                 "typical_low": typical[0] if typical else "",
                 "typical_high": typical[1] if typical else "",
-            }
-            rows.append(row)
-            # 상위 3개만 cross-origin 비교용으로 모음
-            if rank <= 3:
-                all_results.append({
-                    "origin": origin, "dest": dest, "ret": ret_date,
-                    "price": p["price"], "airline": p["airlines"],
-                    "stops": p["stops"], "level": level,
-                })
+            })
 
     if rows:
         new_file = not CSV_FILE.exists()
@@ -158,24 +160,23 @@ def main():
             w.writerows(rows)
         print(f"\n📝 {len(rows)}건 → {CSV_FILE.name}")
 
-    # (목적지, 귀국일)별 출발지 통합 TOP 3
-    if all_results:
+    # 출발지별 TOP 3 출력
+    if by_route:
         print("\n" + "=" * 70)
-        print("📊 오늘의 최저가 TOP 3 (출발지 통합)")
+        print("📊 오늘의 직항 최저가 TOP 3 (출발지별)")
         print("=" * 70)
-        groups = {}
-        for r in all_results:
-            key = (r["dest"], r["ret"])
-            groups.setdefault(key, []).append(r)
-
-        for (dest, ret), items in sorted(groups.items()):
-            items.sort(key=lambda x: x["price"])
+        medals = ["🥇", "🥈", "🥉"]
+        for (dest, ret), origins_data in sorted(by_route.items()):
             print(f"\n  🌴 {dest} / 귀국 {ret}")
-            medals = ["🥇", "🥈", "🥉"]
-            for i, r in enumerate(items[:3]):
-                level_tag = {"low": " 🟢", "high": " 🔴"}.get(r["level"], "")
-                print(f"     {medals[i]} [{r['origin']}] {r['price']:>10,.0f} KRW  "
-                      f"{r['airline']} ({r['stops']}경유){level_tag}")
+            for origin in ORIGINS:  # ICN, PUS 순서 고정
+                items = origins_data.get(origin, [])
+                origin_label = f"[{origin_names[origin]} {origin}]"
+                if not items:
+                    print(f"     {origin_label} 직항 없음")
+                    continue
+                for i, p in enumerate(items[:3]):
+                    print(f"     {medals[i]} {origin_label} {p['price']:>9,.0f} KRW  "
+                          f"{p['airlines']} ({fmt_duration(p['duration_min'])})")
 
     return 0
 
