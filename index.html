@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>✈️ 여름휴가 항공권 추적</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>✈️</text></svg>">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/variable/pretendardvariable.css">
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: linear-gradient(135deg, #FFE5D9 0%, #FCD5CE 35%, #F8EDEB 70%, #E8F4F8 100%);
+  --card-bg: rgba(255, 255, 255, 0.72);
+  --card-border: rgba(255, 255, 255, 0.6);
+  --row-bg: rgba(255, 255, 255, 0.5);
+  --row-bg-top: linear-gradient(135deg, rgba(255, 215, 100, 0.18), rgba(255, 180, 80, 0.12));
+  --text-primary: #2D3748;
+  --text-secondary: #6B7488;
+  --text-muted: #9CA3AF;
+  --level-low: #06A77D;
+  --level-mid: #F4A261;
+  --level-high: #E63946;
+  --badge-pus: #5B8DEF;
+  --badge-icn: #B061D9;
+  --shadow: 0 8px 32px rgba(31, 38, 135, 0.08);
+  --chart-bg: rgba(255, 255, 255, 0.5);
+}
+
+[data-theme="dark"] {
+  --bg: linear-gradient(135deg, #1A1B2E 0%, #2D2A4A 50%, #1F1B3A 100%);
+  --card-bg: rgba(45, 48, 80, 0.65);
+  --card-border: rgba(255, 255, 255, 0.08);
+  --row-bg: rgba(255, 255, 255, 0.04);
+  --row-bg-top: linear-gradient(135deg, rgba(255, 215, 100, 0.12), rgba(255, 180, 80, 0.06));
+  --text-primary: #E8EAF6;
+  --text-secondary: #A0AEC0;
+  --text-muted: #718096;
+  --shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  --chart-bg: rgba(30, 33, 60, 0.5);
+}
+
+body {
+  font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg);
+  background-attachment: fixed;
+  min-height: 100vh;
+  color: var(--text-primary);
+  line-height: 1.5;
+  padding: 28px 18px 60px;
+  transition: color 0.3s ease;
+}
+
+.container { max-width: 1280px; margin: 0 auto; }
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 36px;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.title-block h1 {
+  font-size: 36px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  margin-bottom: 6px;
+}
+.title-block p {
+  color: var(--text-secondary);
+  font-size: 15px;
+  margin-bottom: 10px;
+}
+.title-block .route {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--card-bg);
+  padding: 7px 14px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid var(--card-border);
+  backdrop-filter: blur(10px);
+}
+
+.header-controls { display: flex; align-items: center; gap: 12px; }
+.last-update {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: right;
+  line-height: 1.5;
+}
+.theme-toggle {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  font-size: 20px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s ease;
+  backdrop-filter: blur(10px);
+  color: var(--text-primary);
+}
+.theme-toggle:hover { transform: scale(1.05); }
+
+.section-title {
+  font-size: 14px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 18px;
+  margin-bottom: 44px;
+}
+
+.card {
+  background: var(--card-bg);
+  border-radius: 22px;
+  padding: 22px;
+  border: 1px solid var(--card-border);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.card:hover { transform: translateY(-3px); box-shadow: 0 12px 40px rgba(31, 38, 135, 0.12); }
+.card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: var(--card-accent);
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 6px;
+}
+.dest-name { font-size: 22px; font-weight: 800; margin-bottom: 2px; }
+.dest-code { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; color: var(--text-muted); }
+.dest-emoji { font-size: 32px; line-height: 1; }
+.dates {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+  font-weight: 500;
+}
+
+.flight-row {
+  background: var(--row-bg);
+  border-radius: 14px;
+  padding: 12px 14px;
+  margin-bottom: 8px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid transparent;
+  transition: all 0.2s ease;
+}
+.flight-row:last-child { margin-bottom: 0; }
+.flight-row.top {
+  background: var(--row-bg-top);
+  border-color: rgba(255, 180, 80, 0.3);
+}
+
+.medal {
+  font-size: 22px;
+  width: 32px;
+  text-align: center;
+  line-height: 1;
+}
+
+.row-main { min-width: 0; }
+.row-price-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+.row-price {
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.flight-row.top .row-price { font-size: 22px; }
+
+.origin-badge {
+  font-size: 10px;
+  font-weight: 800;
+  padding: 3px 8px;
+  border-radius: 8px;
+  letter-spacing: 0.05em;
+  color: white;
+  white-space: nowrap;
+}
+.origin-badge.pus { background: var(--badge-pus); }
+.origin-badge.icn { background: var(--badge-icn); }
+
+.row-info {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.row-info strong { color: var(--text-primary); font-weight: 700; }
+
+.row-extra { text-align: right; }
+.row-times {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.row-level {
+  font-size: 10px;
+  font-weight: 700;
+  margin-top: 2px;
+}
+.row-level.low { color: var(--level-low); }
+.row-level.high { color: var(--level-high); }
+
+.chart-container {
+  background: var(--chart-bg);
+  border-radius: 22px;
+  padding: 28px;
+  border: 1px solid var(--card-border);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  height: 480px;
+  display: flex;
+  flex-direction: column;
+}
+.chart-container canvas { flex: 1; min-height: 0; }
+
+.legend-info {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+  margin-top: 8px;
+}
+
+footer {
+  text-align: center;
+  margin-top: 44px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+footer a { color: var(--text-secondary); text-decoration: none; border-bottom: 1px dotted; }
+
+@media (max-width: 640px) {
+  body { padding: 20px 14px 50px; }
+  .title-block h1 { font-size: 26px; }
+  .cards-grid { grid-template-columns: 1fr; }
+  .chart-container { height: 380px; padding: 18px; }
+  .row-price { font-size: 17px; }
+  .flight-row.top .row-price { font-size: 19px; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <div class="title-block">
+      <h1>✈️ 여름휴가 항공권 추적</h1>
+      <p>부산·인천 출발 매일 가격 비교</p>
+      <div class="route">🛫 PUS / ICN → 🌴 DAD · 🥥 CXR · 🛺 BKK</div>
+    </div>
+    <div class="header-controls">
+      <div class="last-update" id="lastUpdate">로딩 중...</div>
+      <button class="theme-toggle" id="themeToggle" aria-label="다크모드 전환">🌙</button>
+    </div>
+  </header>
+
+  <h2 class="section-title">📍 오늘의 최저가 TOP 3 (출발지 통합)</h2>
+  <div class="cards-grid" id="cardsGrid"></div>
+
+  <h2 class="section-title">📈 가격 추이</h2>
+  <div class="chart-container">
+    <canvas id="priceChart"></canvas>
+  </div>
+  <div class="legend-info">실선: 8월 8일 귀국 · 점선: 8월 9일 귀국 · 부산·인천 통합 최저가 기준</div>
+
+  <footer>
+    데이터: Google Flights via SerpAPI · 가격은 참고용이며 실제 발권가와 다를 수 있어요 ·
+    <a href="https://github.com/eunna88/summerholiday" target="_blank">소스</a>
+  </footer>
+</div>
+
+<script>
+const DEST_INFO = {
+  DAD: { name: '다낭', emoji: '🌴', color: '#F4A261' },
+  CXR: { name: '나트랑', emoji: '🥥', color: '#2A9D8F' },
+  BKK: { name: '방콕', emoji: '🛺', color: '#E76F51' },
+};
+
+const ORIGIN_NAME = { PUS: '부산', ICN: '인천' };
+
+// 다크모드
+const themeToggle = document.getElementById('themeToggle');
+const initialTheme = localStorage.getItem('theme') || 'light';
+document.documentElement.setAttribute('data-theme', initialTheme);
+themeToggle.textContent = initialTheme === 'dark' ? '☀️' : '🌙';
+themeToggle.addEventListener('click', () => {
+  const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('theme', next);
+  themeToggle.textContent = next === 'dark' ? '☀️' : '🌙';
+  if (window.allRows) renderChart(window.allRows);
+});
+
+// Mock 데이터 (CSV 없을 때 디자인 미리보기)
+function getMockData() {
+  const today = new Date();
+  const rows = [];
+  const origins = ['PUS', 'ICN'];
+  const dests = ['DAD', 'CXR', 'BKK'];
+  const returns = ['2026-08-08', '2026-08-09'];
+  const basePrice = {
+    'PUS_DAD': 720000, 'ICN_DAD': 680000,
+    'PUS_CXR': 880000, 'ICN_CXR': 820000,
+    'PUS_BKK': 640000, 'ICN_BKK': 580000,
+  };
+  const airlines = {
+    'PUS_DAD': ['에어부산', '진에어', '아시아나항공'],
+    'ICN_DAD': ['대한항공', '비엣젯', '베트남항공'],
+    'PUS_CXR': ['에어부산', '제주항공', '진에어'],
+    'ICN_CXR': ['비엣젯', '대한항공', '비엣남항공'],
+    'PUS_BKK': ['에어부산', '제주항공', '타이항공'],
+    'ICN_BKK': ['대한항공', '아시아나항공', '타이항공'],
+  };
+
+  for (let d = 13; d >= 0; d--) {
+    const date = new Date(today);
+    date.setDate(date.getDate() - d);
+    const dateStr = date.toISOString().split('T')[0];
+    for (const origin of origins) {
+      for (const dest of dests) {
+        for (const ret of returns) {
+          for (let rank = 1; rank <= 3; rank++) {
+            const key = `${origin}_${dest}`;
+            const noise = (Math.sin(d * 0.4 + dest.charCodeAt(0) + origin.charCodeAt(0)) + 1) * 60000;
+            const price = basePrice[key] + noise + (ret === '2026-08-09' ? 30000 : 0) + (rank - 1) * 50000;
+            const level = price < basePrice[key] + 50000 ? 'low' : price < basePrice[key] + 140000 ? 'typical' : 'high';
+            rows.push({
+              check_date: dateStr,
+              origin: origin,
+              destination: dest,
+              return_date: ret,
+              depart_date: '2026-08-03',
+              rank: rank,
+              price_krw: Math.round(price),
+              airlines: airlines[key][rank - 1],
+              stops: dest === 'CXR' && origin === 'PUS' ? 1 : 0,
+              depart_time: '2026-08-03T22:05:00',
+              arrive_time: '2026-08-04T01:10:00',
+              duration_min: dest === 'BKK' ? 340 : dest === 'CXR' ? 460 : 305,
+              price_level: level,
+            });
+          }
+        }
+      }
+    }
+  }
+  return rows;
+}
+
+async function loadData() {
+  try {
+    const res = await fetch(`flight_prices.csv?t=${Date.now()}`);
+    if (!res.ok) throw new Error('CSV not found (' + res.status + ')');
+    const text = await res.text();
+    const parsed = Papa.parse(text, { header: true, dynamicTyping: true, skipEmptyLines: true });
+    if (!parsed.data || parsed.data.length === 0) throw new Error('Empty CSV');
+    const rows = parsed.data.filter(r => r.price_krw && r.destination);
+    if (rows.length === 0) throw new Error('No usable rows');
+    return { rows, source: 'live' };
+  } catch (e) {
+    console.warn('CSV fetch 실패, 데모 데이터 사용:', e.message);
+    return { rows: getMockData(), source: 'mock' };
+  }
+}
+
+const fmtPrice = (p) => '₩' + Math.round(p).toLocaleString('ko-KR');
+const fmtDate = (s) => { const d = new Date(s); return `${d.getMonth() + 1}/${d.getDate()}`; };
+const fmtTime = (s) => { if (!s) return ''; const d = new Date(s); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; };
+const fmtDuration = (m) => `${Math.floor(m/60)}h ${m%60}m`;
+
+function renderCards(rows) {
+  const grid = document.getElementById('cardsGrid');
+  grid.innerHTML = '';
+
+  // 가장 최근 check_date 찾기
+  const latestDate = rows.map(r => r.check_date).filter(Boolean).sort().pop();
+  const todayRows = rows.filter(r => r.check_date === latestDate);
+
+  // (dest, return_date)별 그룹핑 → 출발지 통합해서 가격순 정렬 → TOP 3
+  const groups = {};
+  for (const r of todayRows) {
+    if (!r.destination || !r.return_date) continue;
+    const key = `${r.destination}|${r.return_date}`;
+    (groups[key] ||= []).push(r);
+  }
+
+  // 카드 정렬: 목적지 알파벳, 귀국일 순
+  const sortedKeys = Object.keys(groups).sort();
+
+  for (const key of sortedKeys) {
+    const [dest, retDate] = key.split('|');
+    const items = groups[key];
+    items.sort((a, b) => a.price_krw - b.price_krw);
+    const top3 = items.slice(0, 3);
+    if (top3.length === 0) continue;
+
+    const info = DEST_INFO[dest] || { name: dest, emoji: '✈️', color: '#888' };
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.style.setProperty('--card-accent', info.color);
+
+    const medals = ['🥇', '🥈', '🥉'];
+    const rowsHTML = top3.map((r, i) => {
+      const originName = ORIGIN_NAME[r.origin] || r.origin;
+      const levelHTML = r.price_level === 'low' ? '<div class="row-level low">🟢 평소보다 싸요</div>' :
+                       r.price_level === 'high' ? '<div class="row-level high">🔴 평소보다 비싸요</div>' : '';
+      return `
+        <div class="flight-row ${i === 0 ? 'top' : ''}">
+          <div class="medal">${medals[i]}</div>
+          <div class="row-main">
+            <div class="row-price-line">
+              <span class="row-price">${fmtPrice(r.price_krw)}</span>
+              <span class="origin-badge ${r.origin.toLowerCase()}">${originName} ${r.origin}</span>
+            </div>
+            <div class="row-info">
+              <strong>${r.airlines || '-'}</strong> · ${r.stops == 0 ? '직항' : r.stops + '경유'}
+              ${r.duration_min ? ' · ' + fmtDuration(r.duration_min) : ''}
+            </div>
+          </div>
+          <div class="row-extra">
+            ${r.depart_time && r.arrive_time ? `<div class="row-times">${fmtTime(r.depart_time)} → ${fmtTime(r.arrive_time)}</div>` : ''}
+            ${i === 0 ? levelHTML : ''}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    card.innerHTML = `
+      <div class="card-header">
+        <div>
+          <div class="dest-name">${info.name}</div>
+          <div class="dest-code">${dest}</div>
+        </div>
+        <div class="dest-emoji">${info.emoji}</div>
+      </div>
+      <div class="dates">📅 ${fmtDate('2026-08-03')} 출발 → ${fmtDate(retDate)} 귀국</div>
+      ${rowsHTML}
+    `;
+    grid.appendChild(card);
+  }
+}
+
+function renderChart(rows) {
+  const ctx = document.getElementById('priceChart').getContext('2d');
+  if (window.priceChartInstance) window.priceChartInstance.destroy();
+
+  // (dest, return_date)별로 일자별 최저가 추출 (출발지 통합)
+  const groups = {};
+  for (const r of rows) {
+    if (!r.destination || !r.return_date || !r.price_krw || !r.check_date) continue;
+    const key = `${r.destination}|${r.return_date}`;
+    const dayKey = r.check_date;
+    if (!groups[key]) groups[key] = {};
+    if (!groups[key][dayKey] || r.price_krw < groups[key][dayKey].price) {
+      groups[key][dayKey] = { price: r.price_krw, origin: r.origin };
+    }
+  }
+
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  const textColor = isDark ? '#E2E8F0' : '#2D3748';
+  const gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
+
+  const datasets = Object.entries(groups).map(([key, dayMap]) => {
+    const [dest, ret] = key.split('|');
+    const info = DEST_INFO[dest] || { name: dest, color: '#888' };
+    const points = Object.entries(dayMap)
+      .map(([date, v]) => ({ x: date, y: v.price, origin: v.origin }))
+      .sort((a, b) => new Date(a.x) - new Date(b.x));
+    const isReturn9 = ret === '2026-08-09';
+    return {
+      label: `${info.name} · ${fmtDate(ret)} 귀국`,
+      data: points,
+      borderColor: info.color,
+      backgroundColor: info.color + '22',
+      borderWidth: 2.5,
+      borderDash: isReturn9 ? [6, 4] : [],
+      tension: 0.35,
+      pointRadius: 4,
+      pointHoverRadius: 7,
+      pointBackgroundColor: info.color,
+      pointBorderColor: '#fff',
+      pointBorderWidth: 2,
+      fill: false,
+    };
+  });
+
+  window.priceChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          position: 'top',
+          labels: {
+            color: textColor,
+            font: { family: "'Pretendard Variable', sans-serif", size: 12, weight: '600' },
+            usePointStyle: true,
+            padding: 14,
+          },
+        },
+        tooltip: {
+          backgroundColor: isDark ? 'rgba(30,33,60,0.95)' : 'rgba(255,255,255,0.95)',
+          titleColor: textColor,
+          bodyColor: textColor,
+          borderColor: gridColor,
+          borderWidth: 1,
+          padding: 12,
+          titleFont: { family: "'Pretendard Variable', sans-serif", size: 13, weight: '700' },
+          bodyFont: { family: "'Pretendard Variable', sans-serif", size: 12 },
+          callbacks: {
+            label: (ctx) => {
+              const origin = ctx.raw.origin ? ` [${ORIGIN_NAME[ctx.raw.origin] || ctx.raw.origin}]` : '';
+              return ` ${ctx.dataset.label}: ${fmtPrice(ctx.parsed.y)}${origin}`;
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: { unit: 'day', displayFormats: { day: 'M/d' } },
+          ticks: { color: textColor, font: { family: "'Pretendard Variable', sans-serif" } },
+          grid: { color: gridColor },
+        },
+        y: {
+          ticks: {
+            color: textColor,
+            font: { family: "'Pretendard Variable', sans-serif" },
+            callback: (v) => '₩' + (v/10000).toFixed(0) + '만',
+          },
+          grid: { color: gridColor },
+        },
+      },
+    },
+  });
+}
+
+function updateLastTime(rows, source) {
+  const el = document.getElementById('lastUpdate');
+  const dates = rows.map(r => r.check_date).filter(Boolean).sort();
+  const latest = dates[dates.length - 1];
+  if (source === 'mock') {
+    el.innerHTML = '🔧 데모 미리보기<br>실제 데이터가 쌓이면<br>여기에 표시돼요';
+  } else if (latest) {
+    el.innerHTML = `최종 업데이트<br><strong>${latest}</strong>`;
+  } else {
+    el.textContent = '데이터 없음';
+  }
+}
+
+(async () => {
+  const { rows, source } = await loadData();
+  window.allRows = rows;
+  renderCards(rows);
+  renderChart(rows);
+  updateLastTime(rows, source);
+})();
+</script>
+</body>
+</html>
