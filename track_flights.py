@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-김해(PUS) → DAD/CXR/BKK 항공권 가격 매일 추적
+김해(PUS) + 인천(ICN) → DAD/CXR/BKK 항공권 가격 매일 추적
 SerpAPI Google Flights API 사용
-무료 등급: 월 250건 검색 / 우리는 월 180건 사용
+일일 12건 조회 (출발지 2 × 목적지 3 × 귀국일 2)
 """
 
 import os
@@ -14,7 +14,7 @@ from itertools import product
 import requests
 
 # === 검색 조건 ===
-ORIGIN = "PUS"                              # 김해
+ORIGINS = ["PUS", "ICN"]                    # 김해 + 인천
 DESTINATIONS = ["DAD", "CXR", "BKK"]        # 다낭 / 나트랑(깜라인) / 방콕
 DEPARTURE_DATE = "2026-08-03"
 RETURN_DATES = ["2026-08-08", "2026-08-09"]
@@ -24,12 +24,10 @@ CURRENCY = "KRW"
 # === API 설정 ===
 API_KEY = os.environ.get("SERPAPI_KEY")
 BASE_URL = "https://serpapi.com/search"
-
 CSV_FILE = Path(__file__).parent / "flight_prices.csv"
 
 
 def search_flights(origin, destination, depart, ret):
-    """SerpAPI Google Flights 호출 (왕복, 첫 호출이면 총 왕복가 반환)"""
     params = {
         "engine": "google_flights",
         "departure_id": origin,
@@ -38,7 +36,7 @@ def search_flights(origin, destination, depart, ret):
         "return_date": ret,
         "currency": CURRENCY,
         "adults": ADULTS,
-        "type": 1,                  # 1=Round trip
+        "type": 1,
         "hl": "ko",
         "api_key": API_KEY,
     }
@@ -48,7 +46,6 @@ def search_flights(origin, destination, depart, ret):
 
 
 def parse_flights(data):
-    """best_flights + other_flights에서 가격 정보 추출, 가격순 정렬"""
     offers = (data.get("best_flights") or []) + (data.get("other_flights") or [])
     parsed = []
     for o in offers:
@@ -82,22 +79,22 @@ def fmt_duration(mins):
 def main():
     if not API_KEY:
         print("❌ SERPAPI_KEY 환경변수가 필요해요.")
-        print("   https://serpapi.com 가입 후 Dashboard에서 API Key 복사")
         return 1
 
     now = datetime.now()
-    print(f"🛫 {now:%Y-%m-%d %H:%M} | {ORIGIN} → {'/'.join(DESTINATIONS)}")
-    print(f"   {DEPARTURE_DATE} 출발 / 귀국 {' or '.join(RETURN_DATES)} / 성인 {ADULTS}명\n")
+    print(f"🛫 {now:%Y-%m-%d %H:%M} | 출발지 {'/'.join(ORIGINS)} → {'/'.join(DESTINATIONS)}")
+    print(f"   {DEPARTURE_DATE} 출발 / 귀국 {' or '.join(RETURN_DATES)} / 성인 {ADULTS}명")
+    print(f"   총 {len(ORIGINS) * len(DESTINATIONS) * len(RETURN_DATES)}건 조회\n")
 
     rows = []
-    summary = []
+    all_results = []  # (dest, ret) 그룹별로 모아서 cross-origin 순위 매기기용
     today = now.strftime("%Y-%m-%d")
 
-    for dest, ret_date in product(DESTINATIONS, RETURN_DATES):
-        label = f"{ORIGIN}→{dest} ({DEPARTURE_DATE}~{ret_date})"
+    for origin, dest, ret_date in product(ORIGINS, DESTINATIONS, RETURN_DATES):
+        label = f"{origin}→{dest} ({DEPARTURE_DATE}~{ret_date})"
         print(f"  🔍 {label}")
         try:
-            data = search_flights(ORIGIN, dest, DEPARTURE_DATE, ret_date)
+            data = search_flights(origin, dest, DEPARTURE_DATE, ret_date)
         except requests.HTTPError as e:
             print(f"     ⚠️  HTTP {e.response.status_code}: {e.response.text[:200]}")
             continue
@@ -120,23 +117,17 @@ def main():
         level_emoji = {"low": "🟢싸요", "typical": "🟡보통", "high": "🔴비싸요"}.get(level, "")
         typical = insights.get("typical_price_range", [])
 
-        print(f"     💰 최저가 {best['price']:>9,.0f} KRW  "
+        print(f"     💰 {best['price']:>9,.0f} KRW  "
               f"{best['airlines']} / {best['stops']}경유 / {fmt_duration(best['duration_min'])}  "
               f"{level_emoji}")
-        if typical:
-            print(f"     📊 평소 가격대: {typical[0]:,} ~ {typical[1]:,} KRW")
-
-        summary.append({
-            "dest": dest, "ret": ret_date,
-            "price": best["price"], "airline": best["airlines"],
-            "level": level,
-        })
 
         for rank, p in enumerate(parsed, 1):
-            rows.append({
+            row = {
                 "check_date": today,
-                "origin": ORIGIN, "destination": dest,
-                "depart_date": DEPARTURE_DATE, "return_date": ret_date,
+                "origin": origin,
+                "destination": dest,
+                "depart_date": DEPARTURE_DATE,
+                "return_date": ret_date,
                 "rank": rank,
                 "price_krw": p["price"],
                 "airlines": p["airlines"],
@@ -148,7 +139,15 @@ def main():
                 "price_level": level,
                 "typical_low": typical[0] if typical else "",
                 "typical_high": typical[1] if typical else "",
-            })
+            }
+            rows.append(row)
+            # 상위 3개만 cross-origin 비교용으로 모음
+            if rank <= 3:
+                all_results.append({
+                    "origin": origin, "dest": dest, "ret": ret_date,
+                    "price": p["price"], "airline": p["airlines"],
+                    "stops": p["stops"], "level": level,
+                })
 
     if rows:
         new_file = not CSV_FILE.exists()
@@ -159,16 +158,24 @@ def main():
             w.writerows(rows)
         print(f"\n📝 {len(rows)}건 → {CSV_FILE.name}")
 
-    if summary:
-        summary.sort(key=lambda x: x["price"])
-        print("\n" + "=" * 60)
-        print("📊 오늘의 최저가 TOP")
-        print("=" * 60)
-        for i, r in enumerate(summary, 1):
-            mark = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "  "
-            level_tag = {"low": " 🟢", "high": " 🔴"}.get(r["level"], "")
-            print(f"  {mark} {r['dest']} / 귀국 {r['ret']}  "
-                  f"{r['price']:>10,.0f} KRW  [{r['airline']}]{level_tag}")
+    # (목적지, 귀국일)별 출발지 통합 TOP 3
+    if all_results:
+        print("\n" + "=" * 70)
+        print("📊 오늘의 최저가 TOP 3 (출발지 통합)")
+        print("=" * 70)
+        groups = {}
+        for r in all_results:
+            key = (r["dest"], r["ret"])
+            groups.setdefault(key, []).append(r)
+
+        for (dest, ret), items in sorted(groups.items()):
+            items.sort(key=lambda x: x["price"])
+            print(f"\n  🌴 {dest} / 귀국 {ret}")
+            medals = ["🥇", "🥈", "🥉"]
+            for i, r in enumerate(items[:3]):
+                level_tag = {"low": " 🟢", "high": " 🔴"}.get(r["level"], "")
+                print(f"     {medals[i]} [{r['origin']}] {r['price']:>10,.0f} KRW  "
+                      f"{r['airline']} ({r['stops']}경유){level_tag}")
 
     return 0
 
