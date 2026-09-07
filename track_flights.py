@@ -1,188 +1,139 @@
-#!/usr/bin/env python3
 """
-김해(PUS) + 인천(ICN) → DAD/CXR/BKK 항공권 가격 매일 추적
-SerpAPI Google Flights API 사용
-직항편 기준 출발지별 항공사 TOP 3 표시 (항공사별 최저가)
+chuseok_watch.py — 김해(PUS) 출발 동남아 6개 노선 최저가 감시
+대상 일정: 2026-09-20 출국 / 2026-09-24 귀국 (직항 왕복)
+알림 기준: 300,000 KRW 이하
+
+기존 트래커와 동일하게 SERPAPI_KEY 환경변수를 사용합니다.
+GitHub Actions에서 돌릴 경우 cron: "0 */3 * * *" 정도(3시간 간격)를 권장.
+2주 남은 일정이라 하루 1회로는 특가를 놓칠 수 있습니다.
 """
 
+import json
 import os
-import csv
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from itertools import product
 
 import requests
 
-ORIGINS = ["ICN", "PUS"]
-DESTINATIONS = ["DAD", "CXR", "BKK"]
-DEPARTURE_DATE = "2026-08-03"
-RETURN_DATES = ["2026-08-08", "2026-08-09"]
-ADULTS = 1
-CURRENCY = "KRW"
+SERPAPI_KEY = os.environ["SERPAPI_KEY"]
+ENDPOINT = "https://serpapi.com/search"
 
-API_KEY = os.environ.get("SERPAPI_KEY")
-BASE_URL = "https://serpapi.com/search"
-CSV_FILE = Path(__file__).parent / "flight_prices.csv"
+THRESHOLD_KRW = 300_000
+HISTORY_PATH = Path("data/chuseok_history.json")
+KST = timezone(timedelta(hours=9))
+
+# 공급이 많은 노선부터. 방콕은 수완나품(BKK)/돈므앙(DMK) 둘 다 조회.
+ROUTES = [
+    ("푸꾸옥",   "PQC"),
+    ("나트랑",   "CXR"),
+    ("방콕",     "BKK"),
+    ("방콕(DMK)", "DMK"),
+    ("호치민",   "SGN"),
+    ("하노이",   "HAN"),
+    ("치앙마이", "CNX"),
+]
+
+# 앞뒤 하루씩 흔들어 봅니다. 귀국 9/25는 추석 당일이라 제외.
+DATE_PAIRS = [
+    ("2026-09-20", "2026-09-24"),
+    ("2026-09-19", "2026-09-24"),
+    ("2026-09-20", "2026-09-23"),
+]
 
 
-def search_flights(origin, destination, depart, ret):
+def query(dest_code: str, outbound: str, inbound: str) -> dict | None:
+    """직항 왕복 최저가 1건을 반환. 결과 없으면 None."""
     params = {
         "engine": "google_flights",
-        "departure_id": origin,
-        "arrival_id": destination,
-        "outbound_date": depart,
-        "return_date": ret,
-        "currency": CURRENCY,
-        "adults": ADULTS,
-        "type": 1,
-        "stops": 1,
+        "api_key": SERPAPI_KEY,
+        "departure_id": "PUS",
+        "arrival_id": dest_code,
+        "outbound_date": outbound,
+        "return_date": inbound,
+        "type": "1",        # 왕복
+        "stops": "1",       # 직항만
+        "travel_class": "1",
+        "adults": "1",
+        "currency": "KRW",
         "hl": "ko",
-        "api_key": API_KEY,
+        "gl": "kr",
+        "deep_search": "true",
     }
-    r = requests.get(BASE_URL, params=params, timeout=60)
+    r = requests.get(ENDPOINT, params=params, timeout=45)
     r.raise_for_status()
-    return r.json()
+    data = r.json()
+
+    flights = (data.get("best_flights") or []) + (data.get("other_flights") or [])
+    if not flights:
+        return None
+
+    cheapest = min(
+        (f for f in flights if f.get("price")),
+        key=lambda f: f["price"],
+        default=None,
+    )
+    if not cheapest:
+        return None
+
+    legs = cheapest.get("flights", [])
+    return {
+        "price": cheapest["price"],
+        "airline": legs[0].get("airline") if legs else None,
+        "depart_time": legs[0].get("departure_airport", {}).get("time") if legs else None,
+        "duration_min": cheapest.get("total_duration"),
+    }
 
 
-def parse_flights(data):
-    offers = (data.get("best_flights") or []) + (data.get("other_flights") or [])
-    parsed = []
-    for o in offers:
-        price = o.get("price")
-        if price is None:
-            continue
-        flights = o.get("flights", [])
-        if not flights:
-            continue
-        airlines = ",".join(sorted({s.get("airline", "?") for s in flights}))
-        parsed.append({
-            "price": float(price),
-            "airlines": airlines,
-            "stops": max(0, len(flights) - 1),
-            "depart_at": flights[0].get("departure_airport", {}).get("time", ""),
-            "arrive_at": flights[-1].get("arrival_airport", {}).get("time", ""),
-            "duration_min": o.get("total_duration", 0),
-            "carbon_kg": (o.get("carbon_emissions") or {}).get("this_flight", 0) / 1000,
-        })
-    parsed.sort(key=lambda x: x["price"])
-    return parsed
-
-
-def dedupe_by_airline(flights, n=3):
-    """항공사별 최저가만 추출 (각 항공사당 1개), 가격순으로 n개 반환"""
-    seen = {}
-    for f in flights:
-        if f["airlines"] not in seen:
-            seen[f["airlines"]] = f
-    return list(seen.values())[:n]
-
-
-def fmt_duration(mins):
-    if not mins:
-        return ""
-    h, m = divmod(int(mins), 60)
-    return f"{h}h{m:02d}m"
-
-
-def main():
-    if not API_KEY:
-        print("❌ SERPAPI_KEY 환경변수가 필요해요.")
-        return 1
-
-    now = datetime.now()
-    origin_names = {"PUS": "부산", "ICN": "인천"}
-    print(f"🛫 {now:%Y-%m-%d %H:%M} | 출발지 {'/'.join(ORIGINS)} → {'/'.join(DESTINATIONS)}")
-    print(f"   {DEPARTURE_DATE} 출발 / 귀국 {' or '.join(RETURN_DATES)} / 성인 {ADULTS}명 / 직항만 / 항공사별 최저가\n")
-
+def main() -> None:
+    stamp = datetime.now(KST).isoformat(timespec="minutes")
     rows = []
-    today = now.strftime("%Y-%m-%d")
-    by_route = {}
 
-    for origin, dest, ret_date in product(ORIGINS, DESTINATIONS, RETURN_DATES):
-        label = f"{origin}→{dest} ({DEPARTURE_DATE}~{ret_date})"
-        print(f"  🔍 {label}")
-        try:
-            data = search_flights(origin, dest, DEPARTURE_DATE, ret_date)
-        except requests.HTTPError as e:
-            print(f"     ⚠️  HTTP {e.response.status_code}: {e.response.text[:200]}")
-            continue
-        except requests.RequestException as e:
-            print(f"     ⚠️  요청 실패: {e}")
-            continue
+    for label, code in ROUTES:
+        for outbound, inbound in DATE_PAIRS:
+            try:
+                hit = query(code, outbound, inbound)
+            except Exception as exc:  # 한 노선 실패가 전체를 막지 않도록
+                print(f"  ! {label} {outbound}~{inbound}: {exc}")
+                continue
 
-        if data.get("error"):
-            print(f"     ⚠️  {data['error']}")
-            continue
+            if not hit:
+                print(f"  - {label} {outbound}~{inbound}: 직항 없음")
+                continue
 
-        parsed = parse_flights(data)
-        direct = [p for p in parsed if p["stops"] == 0]
-
-        if not direct:
-            print(f"     (직항편 없음)")
-            continue
-
-        insights = data.get("price_insights") or {}
-        level = insights.get("price_level", "")
-        level_emoji = {"low": "🟢싸요", "typical": "🟡보통", "high": "🔴비싸요"}.get(level, "")
-        typical = insights.get("typical_price_range", [])
-
-        unique_top3 = dedupe_by_airline(direct, n=3)
-        best = unique_top3[0]
-        print(f"     💰 {best['price']:>9,.0f} KRW  "
-              f"{best['airlines']} / 직항 / {fmt_duration(best['duration_min'])}  "
-              f"{level_emoji}  (항공사 {len({d['airlines'] for d in direct})}개)")
-
-        by_route.setdefault((dest, ret_date), {})[origin] = unique_top3
-
-        # CSV: 항공사별 최저가 TOP 3만 저장
-        for rank, p in enumerate(unique_top3, 1):
             rows.append({
-                "check_date": today,
-                "origin": origin,
-                "destination": dest,
-                "depart_date": DEPARTURE_DATE,
-                "return_date": ret_date,
-                "rank": rank,
-                "price_krw": p["price"],
-                "airlines": p["airlines"],
-                "stops": p["stops"],
-                "depart_time": p["depart_at"],
-                "arrive_time": p["arrive_at"],
-                "duration_min": p["duration_min"],
-                "carbon_kg": round(p["carbon_kg"], 1),
-                "price_level": level,
-                "typical_low": typical[0] if typical else "",
-                "typical_high": typical[1] if typical else "",
+                "checked_at": stamp,
+                "dest": label,
+                "code": code,
+                "outbound": outbound,
+                "inbound": inbound,
+                **hit,
             })
 
-    if rows:
-        new_file = not CSV_FILE.exists()
-        with CSV_FILE.open("a", encoding="utf-8-sig", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=rows[0].keys())
-            if new_file:
-                w.writeheader()
-            w.writerows(rows)
-        print(f"\n📝 {len(rows)}건 → {CSV_FILE.name}")
+    rows.sort(key=lambda r: r["price"])
 
-    if by_route:
-        print("\n" + "=" * 70)
-        print("📊 오늘의 직항 항공사별 최저가 TOP 3 (출발지별)")
-        print("=" * 70)
-        medals = ["🥇", "🥈", "🥉"]
-        for (dest, ret), origins_data in sorted(by_route.items()):
-            print(f"\n  🌴 {dest} / 귀국 {ret}")
-            for origin in ORIGINS:
-                items = origins_data.get(origin, [])
-                origin_label = f"[{origin_names[origin]} {origin}]"
-                if not items:
-                    print(f"     {origin_label} 직항 없음")
-                    continue
-                for i, p in enumerate(items[:3]):
-                    print(f"     {medals[i]} {origin_label} {p['price']:>9,.0f} KRW  "
-                          f"{p['airlines']} ({fmt_duration(p['duration_min'])})")
+    print(f"\n=== {stamp} · 김해 출발 직항 왕복 ===")
+    for r in rows:
+        flag = "★" if r["price"] <= THRESHOLD_KRW else " "
+        print(
+            f"{flag} {r['price']:>8,}원  {r['dest']:<9} "
+            f"{r['outbound'][5:]}~{r['inbound'][5:]}  {r['airline'] or ''}"
+        )
 
-    return 0
+    hits = [r for r in rows if r["price"] <= THRESHOLD_KRW]
+    if hits:
+        best = hits[0]
+        print(f"\n>>> 기준가 도달: {best['dest']} {best['price']:,}원 <<<")
+        # GitHub Actions step output으로 넘겨 알림 트리거에 사용
+        if out := os.environ.get("GITHUB_OUTPUT"):
+            with open(out, "a") as fh:
+                fh.write(f"alert=true\n")
+                fh.write(f"alert_text={best['dest']} {best['price']:,}원\n")
+
+    HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    history = json.loads(HISTORY_PATH.read_text()) if HISTORY_PATH.exists() else []
+    history.extend(rows)
+    HISTORY_PATH.write_text(json.dumps(history, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
